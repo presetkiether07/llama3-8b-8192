@@ -57,6 +57,11 @@ app.post('/reset', (req, res) => {
   res.json({ message: `Memory reset for uid ${uid}` });
 });
 
+app.get('/', (req, res) => {
+  res.send('🧠 Norch Memory API is running. Use POST /ask or /reset');
+});
+
+
 app.listen(PORT, () => {
   console.log(`✅ Server running on http://localhost:${PORT}`);
 });
