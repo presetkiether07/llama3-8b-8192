@@ -1,71 +1,58 @@
-const express = require("express");
-const axios = require("axios");
-const cors = require("cors");
-const dotenv = require("dotenv");
-
-dotenv.config();
-
+const express = require('express');
+const axios = require('axios');
+const fs = require('fs');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(cors());
-app.use(express.json());
+const memoryFile = 'chatmemory.json';
+let memory = {};
 
-/**
- * POST endpoint: for use in UI or tools like Postman
- */
-app.post("/api/llama", async (req, res) => {
-  const { prompt, uid = "user", history = [] } = req.body;
-  if (!prompt) return res.status(400).json({ error: "Missing prompt." });
-
-  try {
-    const messages = [...history, { role: "user", content: prompt }];
-    const reply = await getGroqLlamaResponse(messages);
-    res.json({ uid, prompt, response: reply });
-  } catch (err) {
-    res.status(500).json({ error: "LLaMA API call failed." });
-  }
-});
-
-/**
- * GET endpoint: for browser-friendly access via URL query
- * Example: /api/llama?prompt=hello&uid=test
- */
-app.get("/api/llama", async (req, res) => {
-  const prompt = req.query.prompt;
-  const uid = req.query.uid || "browser";
-  if (!prompt) return res.status(400).json({ error: "Missing prompt." });
-
-  try {
-    const messages = [{ role: "user", content: prompt }];
-    const reply = await getGroqLlamaResponse(messages);
-    res.json({ uid, prompt, response: reply });
-  } catch (err) {
-    res.status(500).json({ error: "LLaMA API call failed." });
-  }
-});
-
-// Shared Groq calling function
-async function getGroqLlamaResponse(messages) {
-  const response = await axios.post(
-    "https://api.groq.com/openai/v1/chat/completions",
-    {
-      model: "llama3-8b-8192",
-      messages,
-      temperature: 0.7
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
-        "Content-Type": "application/json"
-      }
-    }
-  );
-  return response.data.choices[0].message.content;
+// Load memory on startup
+if (fs.existsSync(memoryFile)) {
+  memory = JSON.parse(fs.readFileSync(memoryFile, 'utf8'));
 }
-app.get("/", (req, res) => {
-  res.status(200).send("🟢 LLaMA API is running.");
+
+// Save memory to file
+function saveMemory() {
+  fs.writeFileSync(memoryFile, JSON.stringify(memory, null, 2));
+}
+
+// Simple memory logic
+function buildPrompt(uid, message) {
+  if (memory[uid]) {
+    return `Ang topic natin ay ${memory[uid]}.\nUser: ${message}\nAI:`;
+  } else {
+    // Set this message as topic
+    memory[uid] = message;
+    saveMemory();
+    return `Ang bagong topic natin ay ${message}.\nUser: ${message}\nAI:`;
+  }
+}
+
+// Route to handle chat
+app.get('/ask', async (req, res) => {
+  const { uid, message } = req.query;
+
+  if (!uid || !message) {
+    return res.status(400).json({ error: 'Missing uid or message' });
+  }
+
+  const prompt = buildPrompt(uid, message);
+
+  try {
+    const llamaRes = await axios.post('http://localhost:11434/api/generate', {
+      model: 'llama3',
+      prompt,
+      stream: false,
+    });
+
+    res.json({ response: llamaRes.data.response });
+  } catch (err) {
+    console.error('❌ LLaMA error:', err.message);
+    res.status(500).json({ error: 'Failed to connect to LLaMA' });
+  }
 });
+
 app.listen(PORT, () => {
-  console.log(`✅ LLaMA API server running on http://localhost:${PORT}`);
+  console.log(`🚀 API running at http://localhost:${PORT}`);
 });
