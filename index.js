@@ -1,14 +1,20 @@
-const express = require('express');
-const fs = require('fs');
-const axios = require('axios');
+const express = require("express");
+const axios = require("axios");
+const cors = require("cors");
+const dotenv = require("dotenv");
+const fs = require("fs");
+
+dotenv.config();
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-const MEMORY_FILE = './chatmemory.json';
-const LLAMA_API = 'http://localhost:11434/api/generate'; // Replace with actual LLaMA endpoint
-
+app.use(cors());
 app.use(express.json());
 
+const MEMORY_FILE = "./chatmemory.json";
+
+// Load memory from file
 function loadMemory() {
   try {
     return JSON.parse(fs.readFileSync(MEMORY_FILE));
@@ -17,95 +23,109 @@ function loadMemory() {
   }
 }
 
+// Save memory to file
 function saveMemory(data) {
   fs.writeFileSync(MEMORY_FILE, JSON.stringify(data, null, 2));
 }
 
-// ✅ POST /ask (for apps or Postman)
-app.post('/ask', async (req, res) => {
-  const { uid, prompt } = req.body;
-  if (!uid || !prompt) return res.status(400).json({ error: 'uid and prompt required' });
+// Shared Groq calling function
+async function getGroqLlamaResponse(messages) {
+  const response = await axios.post(
+    "https://api.groq.com/openai/v1/chat/completions",
+    {
+      model: "llama3-8b-8192",
+      messages,
+      temperature: 0.7,
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+    }
+  );
+  return response.data.choices[0].message.content;
+}
+
+/**
+ * POST /api/llama - for Postman or UI
+ */
+app.post("/api/llama", async (req, res) => {
+  const { prompt, uid = "user" } = req.body;
+  if (!prompt) return res.status(400).json({ error: "Missing prompt." });
 
   const memory = loadMemory();
-  const history = memory[uid] || '';
-  const input = `${history}\nUser: ${prompt}\nAI:`;
+  const history = memory[uid] || [];
+
+  const messages = [...history, { role: "user", content: prompt }];
 
   try {
-    const response = await axios.post(LLAMA_API, {
-      prompt: input,
-      stream: false
-    });
+    const reply = await getGroqLlamaResponse(messages);
+    const updatedHistory = [...messages, { role: "assistant", content: reply }];
 
-    const reply = response.data.response.trim();
-    memory[uid] = `${input} ${reply}`;
+    memory[uid] = updatedHistory.slice(-20); // Keep last 20 exchanges only
     saveMemory(memory);
 
-    res.json({ reply });
+    res.json({ uid, prompt, response: reply });
   } catch (err) {
-    console.error('❌ LLaMA error:', err.message);
-    res.status(500).json({ error: 'Failed to connect to LLaMA' });
+    console.error("❌ LLaMA API failed:", err.message);
+    res.status(500).json({ error: "LLaMA API call failed." });
   }
 });
 
-// ✅ GET /ask?ask=hello&uid=id123 (for browser)
-app.get('/ask', async (req, res) => {
-  const uid = req.query.uid;
-  const prompt = req.query.ask;
+/**
+ * GET /api/llama?prompt=hello&uid=test - for browser access
+ */
+app.get("/api/llama", async (req, res) => {
+  const prompt = req.query.prompt;
+  const uid = req.query.uid || "browser";
 
-  if (!uid || !prompt) {
-    return res.status(400).json({ error: 'Missing uid or ask in query' });
-  }
+  if (!prompt) return res.status(400).json({ error: "Missing prompt." });
 
   const memory = loadMemory();
-  const history = memory[uid] || '';
-  const input = `${history}\nUser: ${prompt}\nAI:`;
+  const history = memory[uid] || [];
+
+  const messages = [...history, { role: "user", content: prompt }];
 
   try {
-    const response = await axios.post(LLAMA_API, {
-      prompt: input,
-      stream: false
-    });
+    const reply = await getGroqLlamaResponse(messages);
+    const updatedHistory = [...messages, { role: "assistant", content: reply }];
 
-    const reply = response.data.response.trim();
-    memory[uid] = `${input} ${reply}`;
+    memory[uid] = updatedHistory.slice(-20); // Keep last 20 turns
     saveMemory(memory);
 
-    res.send(`<b>🤖 Reply:</b> ${reply}`);
+    res.json({ uid, prompt, response: reply });
   } catch (err) {
-    console.error('❌ LLaMA error:', err.message);
-    res.status(500).send('Failed to connect to LLaMA');
+    console.error("❌ LLaMA API failed:", err.message);
+    res.status(500).json({ error: "LLaMA API call failed." });
   }
 });
 
-// ✅ POST /reset
-app.post('/reset', (req, res) => {
+/**
+ * POST /api/reset - reset memory for a specific uid
+ */
+app.post("/api/reset", (req, res) => {
   const { uid } = req.body;
-  if (!uid) return res.status(400).json({ error: 'uid is required' });
+  if (!uid) return res.status(400).json({ error: "Missing uid." });
 
   const memory = loadMemory();
   delete memory[uid];
   saveMemory(memory);
 
-  res.json({ message: `Memory reset for uid ${uid}` });
+  res.json({ message: `Memory reset for ${uid}` });
 });
 
-// ✅ GET /reset?uid=id123
-app.get('/reset', (req, res) => {
+/**
+ * GET /api/memory?uid=test - (optional) view current memory for a uid
+ */
+app.get("/api/memory", (req, res) => {
   const uid = req.query.uid;
-  if (!uid) return res.status(400).send('Missing uid in query');
+  if (!uid) return res.status(400).json({ error: "Missing uid in query." });
 
   const memory = loadMemory();
-  delete memory[uid];
-  saveMemory(memory);
-
-  res.send(`🧹 Memory for UID <b>${uid}</b> has been reset.`);
-});
-
-// ✅ Home
-app.get('/', (req, res) => {
-  res.send('🧠 Norch Memory API is running. Use GET /ask or /reset');
+  res.json({ uid, memory: memory[uid] || [] });
 });
 
 app.listen(PORT, () => {
-  console.log(`✅ Server running on http://localhost:${PORT}`);
+  console.log(`✅ LLaMA API server running on http://localhost:${PORT}`);
 });
