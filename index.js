@@ -1,58 +1,62 @@
 const express = require('express');
-const axios = require('axios');
 const fs = require('fs');
+const axios = require('axios');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-const memoryFile = 'chatmemory.json';
-let memory = {};
+const MEMORY_FILE = './chatmemory.json';
+const LLAMA_API = 'http://localhost:11434/api/generate'; // Replace with actual LLaMA endpoint
 
-// Load memory on startup
-if (fs.existsSync(memoryFile)) {
-  memory = JSON.parse(fs.readFileSync(memoryFile, 'utf8'));
-}
+app.use(express.json());
 
-// Save memory to file
-function saveMemory() {
-  fs.writeFileSync(memoryFile, JSON.stringify(memory, null, 2));
-}
-
-// Simple memory logic
-function buildPrompt(uid, message) {
-  if (memory[uid]) {
-    return `Ang topic natin ay ${memory[uid]}.\nUser: ${message}\nAI:`;
-  } else {
-    // Set this message as topic
-    memory[uid] = message;
-    saveMemory();
-    return `Ang bagong topic natin ay ${message}.\nUser: ${message}\nAI:`;
+function loadMemory() {
+  try {
+    return JSON.parse(fs.readFileSync(MEMORY_FILE));
+  } catch {
+    return {};
   }
 }
 
-// Route to handle chat
-app.get('/ask', async (req, res) => {
-  const { uid, message } = req.query;
+function saveMemory(data) {
+  fs.writeFileSync(MEMORY_FILE, JSON.stringify(data, null, 2));
+}
 
-  if (!uid || !message) {
-    return res.status(400).json({ error: 'Missing uid or message' });
-  }
+app.post('/ask', async (req, res) => {
+  const { uid, prompt } = req.body;
+  if (!uid || !prompt) return res.status(400).json({ error: 'uid and prompt required' });
 
-  const prompt = buildPrompt(uid, message);
+  const memory = loadMemory();
+  const history = memory[uid] || '';
+  const input = `${history}\nUser: ${prompt}\nAI:`;
 
   try {
-    const llamaRes = await axios.post('http://localhost:11434/api/generate', {
-      model: 'llama3',
-      prompt,
-      stream: false,
+    const response = await axios.post(LLAMA_API, {
+      prompt: input,
+      stream: false
     });
 
-    res.json({ response: llamaRes.data.response });
+    const reply = response.data.response.trim();
+    memory[uid] = `${input} ${reply}`;
+    saveMemory(memory);
+
+    res.json({ reply });
   } catch (err) {
     console.error('❌ LLaMA error:', err.message);
     res.status(500).json({ error: 'Failed to connect to LLaMA' });
   }
 });
 
+app.post('/reset', (req, res) => {
+  const { uid } = req.body;
+  if (!uid) return res.status(400).json({ error: 'uid is required' });
+
+  const memory = loadMemory();
+  delete memory[uid];
+  saveMemory(memory);
+
+  res.json({ message: `Memory reset for uid ${uid}` });
+});
+
 app.listen(PORT, () => {
-  console.log(`🚀 API running at http://localhost:${PORT}`);
+  console.log(`✅ Server running on http://localhost:${PORT}`);
 });
